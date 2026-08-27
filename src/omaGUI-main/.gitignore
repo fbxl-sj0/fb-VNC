@@ -1,5 +1,25 @@
-# omaGUI local compiler products
+# omaGUI
+# -------
+#
+# File: .gitignore
+#
+# Purpose:
+#     Keep omaGUI compiler and test products out of embedding projects.
+
+# Compiler products with conventional extensions.
 *.exe
 *.o
 *.obj
 
+# Extensionless executables produced on Unix-like targets.
+/demo
+/tests/*
+!/tests/*.bas
+!/tests/*.bi
+/tools/*
+!/tools/*.bas
+
+# Output written by omaGUI rendering tests.
+/test_out.bmp
+
+# end of .gitignore

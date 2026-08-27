@@ -1,0 +1,59 @@
+# Portable FreeBASIC VNC Viewer
+# ---------------------------------
+#
+# File: .gitignore
+#
+# Purpose:
+#     Keep local compiler, profiler, editor, and operating-system products out
+#     of the source repository.
+#
+# This file intentionally does not ignore source files, documentation, font
+# assets, or reproducible test inputs.
+
+# Viewer executables produced by the top-level Makefile.
+/fbvnc
+/fbvnc-gfx2
+/fbvnc-serial
+
+# Test and benchmark executables produced by the top-level Makefile.
+/tests/test_des
+/tests/test_scaler
+/tests/test_server_parser
+/tests/perf_scaler
+/tests/perf_rfb_server
+
+# FreeBASIC and native-toolchain products.
+*.exe
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.asm
+*.ll
+*.pp.bas
+*.gcda
+*.gcno
+*.prof
+/gmon.out
+/perf.data
+/perf.data.old
+
+# Conventional out-of-tree build and packaging directories.
+/build/
+/dist/
+/out/
+
+# Temporary files and editor state.
+*.bak
+*.log
+*.swp
+*.tmp
+*~
+/.idea/
+/.vscode/
+/.DS_Store
+/Thumbs.db
+
+# end of .gitignore
