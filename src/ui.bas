@@ -28,6 +28,7 @@
 #include once "omaGUI-main/omaGUI.bi"
 #Ifdef __FB_GFXLIB3__
 #include once "fbgfx3.bi"
+#include once "builtin.bi"
 #EndIf
 #include once "ui.bi"
 #include once "rfb.bi"
@@ -115,6 +116,9 @@ type UiState
 	frameSurfaceWidth as integer
 	frameSurfaceHeight as integer
 	frameSurfaceReady as integer
+	frameUploadPixels as ubyte ptr
+	frameUploadCapacity as ulongint
+	scaleFilter as integer
 #EndIf
 end type
 
@@ -486,6 +490,26 @@ private sub ReleaseFrameSurface( byref state as UiState )
 	state.frameSurfaceReady = 0
 end sub
 
+private sub ReleaseFrameUploadBuffer( byref state as UiState )
+	if( state.frameUploadPixels <> 0 ) then deallocate state.frameUploadPixels
+	state.frameUploadPixels = 0
+	state.frameUploadCapacity = 0
+end sub
+
+private function EnsureFrameUploadBuffer( byref state as UiState, byval requiredBytes as ulongint ) as integer
+	dim as ubyte ptr newPixels
+
+	if( requiredBytes < 1 ) then return 0
+	if( state.frameUploadPixels <> 0 andalso state.frameUploadCapacity >= requiredBytes ) then return -1
+
+	newPixels = cptr( ubyte ptr, reallocate( state.frameUploadPixels, requiredBytes ) )
+	if( newPixels = 0 ) then return 0
+
+	state.frameUploadPixels = newPixels
+	state.frameUploadCapacity = requiredBytes
+	return -1
+end function
+
 private function EnsureFrameSurface( byref state as UiState, byval surfaceWidth as integer, byval surfaceHeight as integer, byref created as integer ) as integer
 	dim as any ptr newSurface
 
@@ -516,42 +540,80 @@ end function
 
 private function RenderFramebufferGfx3( byref state as UiState, byref client as RfbClient, byref layout as UiLayout ) as integer
 	dim as integer surfaceCreated
+	dim as integer uploadLeft
 	dim as integer uploadTop
+	dim as integer uploadRight
 	dim as integer uploadBottom
+	dim as integer uploadWidth
 	dim as integer uploadHeight
 	dim as integer sourcePitch
+	dim as integer packedPitch
+	dim as integer uploadRow
+	dim as ulongint packedBytes
 	dim as const ulong ptr sourcePixels
 	dim as integer uploadNeeded
 
 	if( EnsureFrameSurface( state, client.serverWidth, client.serverHeight, surfaceCreated ) = 0 ) then return 0
 
 	if( surfaceCreated ) then
+		uploadLeft = 0
 		uploadTop = 0
+		uploadRight = client.serverWidth - 1
 		uploadBottom = client.serverHeight - 1
 		uploadNeeded = -1
 	elseif( client.framebufferDirtyValid ) then
+		uploadLeft = client.framebufferDirtyLeft
 		uploadTop = client.framebufferDirtyTop
+		uploadRight = client.framebufferDirtyRight
 		uploadBottom = client.framebufferDirtyBottom
 		uploadNeeded = -1
 	end if
 
 	if( uploadNeeded ) then
-		if( uploadTop < 0 orelse uploadBottom < uploadTop orelse uploadBottom >= client.serverHeight ) then
+		if( uploadLeft < 0 orelse uploadRight < uploadLeft orelse uploadRight >= client.serverWidth orelse _
+			uploadTop < 0 orelse uploadBottom < uploadTop orelse uploadBottom >= client.serverHeight ) then
 			ReleaseFrameSurface state
 			return 0
 		end if
 
 		/'
-		    Gfx3SurfaceUpload copies sourcePitch * height bytes into its queued
-		    command. Upload complete affected rows so the source remains contiguous
-		    and cannot read beyond the final framebuffer row. The dirty left/right
-		    bounds remain recorded for a future packed-rectangle implementation.
+		    gfxlib3 currently copies sourcePitch * height bytes into its queued
+		    command. Pack narrow dirty rectangles so a small update does not copy and
+		    transfer complete framebuffer rows. Packing adds one CPU copy, so use the
+		    direct full-row path once the dirty width reaches half the framebuffer;
+		    that path moves no more total memory and needs no staging allocation.
 		'/
+		uploadWidth = uploadRight - uploadLeft + 1
 		uploadHeight = uploadBottom - uploadTop + 1
-		sourcePitch = client.serverWidth * sizeof( ulong )
-		sourcePixels = client.framebuffer + culngint( uploadTop ) * client.serverWidth
+		if( uploadWidth < ( client.serverWidth + 1 ) \ 2 ) then
+			packedPitch = uploadWidth * sizeof( ulong )
+			packedBytes = culngint( packedPitch ) * culngint( uploadHeight )
+			if( EnsureFrameUploadBuffer( state, packedBytes ) ) then
+				for uploadRow = 0 to uploadHeight - 1
+					__builtin_memcpy( _
+						state.frameUploadPixels + culngint( uploadRow ) * packedPitch, _
+						client.framebuffer + _
+							culngint( uploadTop + uploadRow ) * client.serverWidth + uploadLeft, _
+						packedPitch _
+					)
+				next uploadRow
+				sourcePitch = packedPitch
+				sourcePixels = cptr( const ulong ptr, state.frameUploadPixels )
+			else
+				/' Allocation failure keeps the correct direct-row fallback available. '/
+				uploadLeft = 0
+				uploadWidth = client.serverWidth
+				sourcePitch = client.serverWidth * sizeof( ulong )
+				sourcePixels = client.framebuffer + culngint( uploadTop ) * client.serverWidth
+			end if
+		else
+			uploadLeft = 0
+			uploadWidth = client.serverWidth
+			sourcePitch = client.serverWidth * sizeof( ulong )
+			sourcePixels = client.framebuffer + culngint( uploadTop ) * client.serverWidth
+		end if
 		if( Gfx3SurfaceUpload( _
-			state.frameSurface, 0, uploadTop, client.serverWidth, uploadHeight, _
+			state.frameSurface, uploadLeft, uploadTop, uploadWidth, uploadHeight, _
 			sourcePitch, sourcePixels _
 		) <> 0 ) then
 			ReleaseFrameSurface state
@@ -581,7 +643,7 @@ private sub BlitFramebufferGfx3( byref state as UiState, byref layout as UiLayou
 		0, 0, state.frameSurfaceWidth, state.frameSurfaceHeight, _
 		layout.destinationX, layout.destinationY, _
 		layout.destinationWidth, layout.destinationHeight, _
-		GFX3_PUT_PSET, 255, GFX3_FILTER_NEAREST _
+		GFX3_PUT_PSET, 255, state.scaleFilter _
 	)
 	backend_ResetClip()
 	state.frameSurfaceReady = 0
@@ -803,7 +865,12 @@ end sub
 
 private sub DrawOptionsOverlay( byref state as UiState, byref options as VncOptions )
 	dim as integer panelWidth = 390
-	dim as integer panelHeight = 225
+	dim as integer panelHeight
+#Ifdef __FB_GFXLIB3__
+	panelHeight = 270
+#Else
+	panelHeight = 225
+#EndIf
 	dim as integer x = ( state.windowWidth - panelWidth ) \ 2
 	dim as integer y = ( state.windowHeight - panelHeight ) \ 2
 
@@ -811,7 +878,14 @@ private sub DrawOptionsOverlay( byref state as UiState, byref options as VncOpti
 	DrawCheckBox( x + 28, y + 58, "View only", options.viewOnly )
 	DrawCheckBox( x + 28, y + 90, "Scale desktop to fit", options.scaleToFit )
 	DrawCheckBox( x + 28, y + 122, "Show session toolbar (F8 restores it)", options.showToolbar )
+#Ifdef __FB_GFXLIB3__
+	DrawLabel( x + 28, y + 154, "Scaling filter", rgb( 25, 25, 25 ) )
+	DrawCheckBox( x + 28, y + 176, "Nearest (crisp)", state.scaleFilter = GFX3_FILTER_NEAREST )
+	DrawCheckBox( x + 200, y + 176, "Linear (smooth)", state.scaleFilter = GFX3_FILTER_LINEAR )
+	DrawButton( x + panelWidth - 110, y + 224, 82, 28, "Close", -1 )
+#Else
 	DrawButton( x + panelWidth - 110, y + 174, 82, 28, "Close", -1 )
+#EndIf
 end sub
 
 private sub DrawInfoOverlay( byref state as UiState, byref snapshot as UiClientSnapshot )
@@ -1190,7 +1264,11 @@ private sub HandleOverlayClick( byref state as UiState, byref options as VncOpti
 	select case state.overlay
 	case UI_OVERLAY_OPTIONS
 		panelWidth = 390
+#Ifdef __FB_GFXLIB3__
+		panelHeight = 270
+#Else
 		panelHeight = 225
+#EndIf
 		x = ( state.windowWidth - panelWidth ) \ 2
 		y = ( state.windowHeight - panelHeight ) \ 2
 		if( HitRectangle( mouseX, mouseY, x + 28, y + 53, panelWidth - 56, 24 ) ) then
@@ -1201,8 +1279,17 @@ private sub HandleOverlayClick( byref state as UiState, byref options as VncOpti
 		elseif( HitRectangle( mouseX, mouseY, x + 28, y + 117, panelWidth - 56, 24 ) ) then
 			options.showToolbar = not options.showToolbar
 			state.overlay = UI_OVERLAY_NONE
+#Ifdef __FB_GFXLIB3__
+		elseif( HitRectangle( mouseX, mouseY, x + 28, y + 170, 150, 24 ) ) then
+			state.scaleFilter = GFX3_FILTER_NEAREST
+		elseif( HitRectangle( mouseX, mouseY, x + 200, y + 170, 160, 24 ) ) then
+			state.scaleFilter = GFX3_FILTER_LINEAR
+		elseif( HitRectangle( mouseX, mouseY, x + panelWidth - 110, y + 224, 82, 28 ) ) then
+			state.overlay = UI_OVERLAY_NONE
+#Else
 		elseif( HitRectangle( mouseX, mouseY, x + panelWidth - 110, y + 174, 82, 28 ) ) then
 			state.overlay = UI_OVERLAY_NONE
+#EndIf
 		end if
 
 	case UI_OVERLAY_INFO
@@ -1458,6 +1545,9 @@ function UiRun( byref options as VncOptions, byval connectImmediately as integer
 	state.frameSurfaceWidth = 0
 	state.frameSurfaceHeight = 0
 	state.frameSurfaceReady = 0
+	state.frameUploadPixels = 0
+	state.frameUploadCapacity = 0
+	state.scaleFilter = GFX3_FILTER_NEAREST
 #EndIf
 
 	RfbInitialise( client )
@@ -1565,6 +1655,7 @@ function UiRun( byref options as VncOptions, byval connectImmediately as integer
 	RfbDisconnect( client )
 #Ifdef __FB_GFXLIB3__
 	ReleaseFrameSurface state
+	ReleaseFrameUploadBuffer state
 #EndIf
 	ReleaseFrameImage state
 	backend_Exit()
