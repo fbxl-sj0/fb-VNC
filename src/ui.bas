@@ -882,9 +882,9 @@ private sub DrawOptionsOverlay( byref state as UiState, byref options as VncOpti
 	DrawLabel( x + 28, y + 154, "Scaling filter", rgb( 25, 25, 25 ) )
 	DrawCheckBox( x + 28, y + 176, "Nearest (crisp)", state.scaleFilter = GFX3_FILTER_NEAREST )
 	DrawCheckBox( x + 200, y + 176, "Linear (smooth)", state.scaleFilter = GFX3_FILTER_LINEAR )
-	DrawButton( x + panelWidth - 110, y + 224, 82, 28, "Close", -1 )
+	DrawButton( x + panelWidth - 110, y + 224, 82, 28, "Close" )
 #Else
-	DrawButton( x + panelWidth - 110, y + 174, 82, 28, "Close", -1 )
+	DrawButton( x + panelWidth - 110, y + 174, 82, 28, "Close" )
 #EndIf
 end sub
 
@@ -1014,7 +1014,59 @@ private function ToolbarActionAt( byval mouseX as integer, byval mouseY as integ
 	return 0
 end function
 
-private function KeySymFromEvent( byref eventData as event ) as ulong
+private function ControlKeySymFromEvent( byref eventData as event ) as ulong
+	/'
+	    gfxlib reports Ctrl+A through Ctrl+Z as ASCII control values 1 through
+	    26. RFB needs the printable key's X11 keysym while the separate Control
+	    key event remains held. The scancode fallback covers backends which omit
+	    ASCII on a modified key release.
+	'/
+	select case eventData.ascii
+	case 1 to 26: return culng( asc( "a" ) + eventData.ascii - 1 )
+	case 27: return culng( asc( "[" ) )
+	case 28: return culng( asc( "\" ) )
+	case 29: return culng( asc( "]" ) )
+	case 30: return culng( asc( "^" ) )
+	case 31: return culng( asc( "_" ) )
+	end select
+
+	select case eventData.scancode
+	case SC_A: return asc( "a" )
+	case SC_B: return asc( "b" )
+	case SC_C: return asc( "c" )
+	case SC_D: return asc( "d" )
+	case SC_E: return asc( "e" )
+	case SC_F: return asc( "f" )
+	case SC_G: return asc( "g" )
+	case SC_H: return asc( "h" )
+	case SC_I: return asc( "i" )
+	case SC_J: return asc( "j" )
+	case SC_K: return asc( "k" )
+	case SC_L: return asc( "l" )
+	case SC_M: return asc( "m" )
+	case SC_N: return asc( "n" )
+	case SC_O: return asc( "o" )
+	case SC_P: return asc( "p" )
+	case SC_Q: return asc( "q" )
+	case SC_R: return asc( "r" )
+	case SC_S: return asc( "s" )
+	case SC_T: return asc( "t" )
+	case SC_U: return asc( "u" )
+	case SC_V: return asc( "v" )
+	case SC_W: return asc( "w" )
+	case SC_X: return asc( "x" )
+	case SC_Y: return asc( "y" )
+	case SC_Z: return asc( "z" )
+	case SC_SPACE: return asc( " " )
+	case SC_LEFTBRACKET: return asc( "[" )
+	case SC_RIGHTBRACKET: return asc( "]" )
+	case SC_BACKSLASH: return asc( "\" )
+	end select
+
+	return 0
+end function
+
+private function KeySymFromEvent( byref eventData as event, byval controlHeld as integer ) as ulong
 	if( eventData.ascii >= 32 andalso eventData.ascii <= 255 ) then
 		return culng( eventData.ascii )
 	end if
@@ -1044,6 +1096,11 @@ private function KeySymFromEvent( byref eventData as event ) as ulong
 	case SC_F11: return &hFFC8u
 	case SC_F12: return &hFFC9u
 	end select
+
+	if( controlHeld ) then
+		dim as ulong controlKeySym = ControlKeySymFromEvent( eventData )
+		if( controlKeySym <> 0 ) then return controlKeySym
+	end if
 
 	select case eventData.ascii
 	case 8: return &hFF08u
@@ -1453,15 +1510,15 @@ private sub HandleSessionEvent( byref state as UiState, byref options as VncOpti
 			options.showToolbar = not options.showToolbar
 			state.needsRedraw = -1
 		else
-			keysym = KeySymFromEvent( eventData )
+			keysym = KeySymFromEvent( eventData, state.controlHeld )
 			if( keysym <> 0 ) then RfbSendKey( client, keysym, -1 )
 		end if
 	case EVENT_KEY_REPEAT
-		keysym = KeySymFromEvent( eventData )
+		keysym = KeySymFromEvent( eventData, state.controlHeld )
 		if( keysym <> 0 ) then RfbSendKey( client, keysym, -1 )
 	case EVENT_KEY_RELEASE
 		if( eventData.scancode <> SC_F8 ) then
-			keysym = KeySymFromEvent( eventData )
+			keysym = KeySymFromEvent( eventData, state.controlHeld )
 			if( keysym <> 0 ) then RfbSendKey( client, keysym, 0 )
 		end if
 	case EVENT_WINDOW_LOST_FOCUS
