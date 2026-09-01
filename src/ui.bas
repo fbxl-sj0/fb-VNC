@@ -911,7 +911,7 @@ private sub DrawInfoOverlay( byref state as UiState, byref snapshot as UiClientS
 	else
 		DrawLabel( x + 28, y + 178, "Execution: portable serial fallback", rgb( 25, 25, 25 ) )
 	end if
-	DrawButton( x + panelWidth - 110, y + 210, 82, 28, "Close", -1 )
+	DrawButton( x + panelWidth - 110, y + 210, 82, 28, "Close" )
 end sub
 
 private sub DrawClipboardOverlay( byref state as UiState )
